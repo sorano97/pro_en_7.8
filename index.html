@@ -60,6 +60,15 @@
       min-width: 0;
     }
 
+    #header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
     #header h1 {
       font-size: 1.15rem;
       font-weight: 800;
@@ -74,7 +83,8 @@
       margin-top: 3px;
     }
 
-    #reading-toggle {
+    #reading-toggle,
+    #language-toggle {
       border: 1.6px solid #161616;
       background: #ffffff;
       color: #161616;
@@ -89,12 +99,14 @@
       font-family: inherit;
     }
 
-    #reading-toggle:hover {
+    #reading-toggle:hover,
+    #language-toggle:hover {
       background: #161616;
       color: #ffffff;
     }
 
-    #reading-toggle.active {
+    #reading-toggle.active,
+    #language-toggle.active {
       background: #161616;
       color: #ffffff;
     }
@@ -325,6 +337,11 @@
       background: #e3e1d8;
     }
 
+    .location-btn.active {
+      background: #161616;
+      color: #ffffff;
+    }
+
     .submit-btn {
       width: 100%;
       border: none;
@@ -523,7 +540,12 @@
         font-size: 1rem;
       }
 
-      #reading-toggle {
+      #header-actions {
+        gap: 6px;
+      }
+
+      #reading-toggle,
+      #language-toggle {
         font-size: 0.75rem;
         padding: 6px 9px;
       }
@@ -589,9 +611,14 @@
       </p>
     </div>
 
-    <button type="button" id="reading-toggle" data-normal="ひらがなにする" data-hira="かんじにする">
-      ひらがなにする
-    </button>
+    <div id="header-actions">
+      <button type="button" id="reading-toggle" data-normal="ひらがなにする" data-hira="かんじにする" data-en="Hiragana">
+        ひらがなにする
+      </button>
+      <button type="button" id="language-toggle" data-normal="English" data-hira="English" data-en="日本語">
+        English
+      </button>
+    </div>
   </div>
 
   <div id="main">
@@ -630,6 +657,17 @@
             data-hira="&#x1F4CD; いまいる ばしょを 入れる"
           >
             &#x1F4CD; 現在地を取得する
+          </button>
+
+          <button
+            type="button"
+            class="location-btn"
+            id="select-map-btn"
+            data-normal="&#x1F5FA; 地図をクリックして場所を選ぶ"
+            data-hira="&#x1F5FA; ちずを おして ばしょを えらぶ"
+            data-en="&#x1F5FA; Pick a place on the map"
+          >
+            &#x1F5FA; 地図をクリックして場所を選ぶ
           </button>
 
           <div class="row">
@@ -824,6 +862,10 @@
     };
 
     var allMarkers = [];
+    var currentLocationMarker = null;
+    var currentLocationCircle = null;
+    var selectedLocationMarker = null;
+    var isMapPickMode = false;
 
     // --- 変更点1：フィルターはボタン選択式(単一選択)ではなく、トグル選択式(複数選択)にする ---
     // activeFilters が空のときは「すべて表示」。個別ボタンをクリックするとそのタイプだけを
@@ -832,6 +874,7 @@
 
     var currentSearch = '';
     var easyMode = false;
+    var englishMode = false;
     var lastLoadedCount = 0;
     var lastTotalCount = 0;
 
@@ -910,7 +953,133 @@
         .trim();
     }
 
+    function englishText(text) {
+      if (text === null || text === undefined) {
+        return '';
+      }
+
+      var result = String(text);
+
+      var dictionary = [
+        ['地域の危険箇所をみんなでオープンデータ化するプロジェクト', 'A project to turn local hazard spots into open data'],
+        ['危険だと感じた場所を入力すると、このブラウザに保存され、地図上にも表示されます', 'Enter a place you feel is unsafe. It will be saved in this browser and shown on the map'],
+        ['登録しました。このブラウザには保存されました。公開データに反映するにはkikenmap.geojsonを更新してください', 'Saved in this browser. To publish it as shared data, update kikenmap.geojson'],
+        ['このページはGoogle Apps Script上で開く必要があります。', 'This page must be opened on Google Apps Script'],
+        ['GeoJSONを読み込めませんでした：HTTP', 'Could not load GeoJSON: HTTP'],
+        ['地図選択中：地図をクリックしてください', 'Selecting: click the map'],
+        ['地図をクリックして場所を選ぶ', 'Pick a place on the map'],
+        ['地図上で登録したい場所をクリックしてください', 'Click the place on the map you want to register'],
+        ['地図上で場所を選びました', 'Place selected on the map'],
+        ['地図選択を終了しました', 'Map selection mode ended'],
+        ['このブラウザでは現在地取得が使えません', 'This browser cannot get your current location'],
+        ['現在地を取得しています', 'Getting your current location'],
+        ['現在地を入力しました', 'Current location entered'],
+        ['現在地を表示しました。現在地を入力しました', 'Current location shown and entered'],
+        ['現在地を表示しました', 'Current location shown'],
+        ['現在地を取得できませんでした', 'Could not get your current location'],
+        ['必須項目を入力してください', 'Please fill in the required fields'],
+        ['緯度と経度は数字で入力してください', 'Latitude and longitude must be numbers'],
+        ['読み込みに失敗しました', 'Failed to load data'],
+        ['データを読み込んでいます', 'Loading data'],
+        ['神山町 危険箇所マップ', 'Kamiyama Hazard Map'],
+        ['危険な場所を登録する', 'Register a hazard spot'],
+        ['ひらがなにする', 'Hiragana'],
+        ['かんじにする', 'Kanji'],
+        ['現在地を取得する', 'Use current location'],
+        ['場所名・説明文・通報先などで検索', 'Search by place, description, contact, etc.'],
+        ['例：〇〇交差点、〇〇公園前', 'Example: crossing, park entrance'],
+        ['例：街灯が少なく、夜はかなり暗いです', 'Example: There are few lights and it is very dark at night'],
+        ['例：〇〇公民館、学校、コンビニ', 'Example: community center, school, convenience store'],
+        ['例：〇〇駐在所、〇〇警察署', 'Example: police box, police station'],
+        ['例：警察相談専用電話 #9110', 'Example: police consultation line #9110'],
+        ['緊急時は110番など、実際の状況に応じた連絡先を使ってください', 'In an emergency, use the proper contact such as 110'],
+        ['交通量が多い', 'Heavy traffic'],
+        ['見通しが悪い', 'Poor visibility'],
+        ['自然災害', 'Natural disaster'],
+        ['暗い道', 'Dark road'],
+        ['不審者', 'Suspicious person'],
+        ['その他', 'Other'],
+        ['事故', 'Accident'],
+        ['危険箇所', 'Hazard spots'],
+        ['危険な場所', 'hazard spot'],
+        ['危険の種類', 'Hazard type'],
+        ['危険度', 'Risk level'],
+        ['場所名', 'Place name'],
+        ['説明文', 'Description'],
+        ['報告日時', 'Reported at'],
+        ['報告日', 'Reported date'],
+        ['投稿者区分', 'Reporter type'],
+        ['近くの避難場所', 'Nearby shelter'],
+        ['避難場所', 'Shelter'],
+        ['近くの交番・警察署', 'Nearby police box / station'],
+        ['交番', 'Police box'],
+        ['警察署', 'Police station'],
+        ['相談・通報先', 'Contact / report to'],
+        ['通報先', 'Contact'],
+        ['確認状態', 'Check status'],
+        ['対応状況', 'Response status'],
+        ['現在地', 'Current location'],
+        ['選んだ場所', 'Selected place'],
+        ['取得', 'Get'],
+        ['入力', 'Input'],
+        ['登録する', 'Register'],
+        ['入力をリセットしました', 'Form reset'],
+        ['入力をリセット', 'Reset form'],
+        ['必須', 'Required'],
+        ['選択してください', 'Select'],
+        ['低い', 'Low'],
+        ['やや低い', 'Slightly low'],
+        ['普通', 'Medium'],
+        ['高い', 'High'],
+        ['とても高い', 'Very high'],
+        ['表示中', 'Showing'],
+        ['全', 'All'],
+        ['件', 'items'],
+        ['緯度', 'Latitude'],
+        ['経度', 'Longitude'],
+        ['フィルター：', 'Filter:'],
+        ['交通', 'Traffic'],
+        ['見通し', 'Visibility'],
+        ['クリア', 'Clear'],
+        ['すべて', 'All'],
+        ['学生', 'Student'],
+        ['保護者', 'Parent / guardian'],
+        ['教員', 'Teacher'],
+        ['地域住民', 'Local resident'],
+        ['対応前', 'Not handled'],
+        ['未確認', 'Unchecked'],
+        ['確認済み', 'Checked'],
+        ['登録しました', 'Registered'],
+        ['地図に追加しました', 'Added to the map'],
+        ['登録しています', 'Registering'],
+        ['街灯', 'streetlights'],
+        ['夜', 'night'],
+        ['周辺', 'around'],
+        ['駅', 'station'],
+        ['公園', 'park'],
+        ['交差点', 'crossing'],
+        ['横断', 'crossing'],
+        ['注意', 'caution'],
+        ['車', 'car'],
+        ['歩行者', 'pedestrian'],
+        ['自転車', 'bicycle'],
+        ['大通り', 'main road'],
+        ['人通り', 'foot traffic'],
+        ['学校', 'school']
+      ];
+
+      dictionary.forEach(function(pair) {
+        result = result.split(pair[0]).join(pair[1]);
+      });
+
+      return result;
+    }
+
     function easyText(text) {
+      if (englishMode) {
+        return englishText(text);
+      }
+
       if (!easyMode) {
         return text;
       }
@@ -994,16 +1163,20 @@
     }
 
     function updateEasyModeTexts() {
-      document.querySelectorAll('[data-normal][data-hira]').forEach(function(el) {
-        if (easyMode) {
+      document.querySelectorAll('[data-normal]').forEach(function(el) {
+        if (englishMode) {
+          el.textContent = el.getAttribute('data-en') || englishText(el.getAttribute('data-normal'));
+        } else if (easyMode && el.hasAttribute('data-hira')) {
           el.textContent = el.getAttribute('data-hira');
         } else {
           el.textContent = el.getAttribute('data-normal');
         }
       });
 
-      document.querySelectorAll('[data-normal-placeholder][data-hira-placeholder]').forEach(function(el) {
-        if (easyMode) {
+      document.querySelectorAll('[data-normal-placeholder]').forEach(function(el) {
+        if (englishMode) {
+          el.setAttribute('placeholder', el.getAttribute('data-en-placeholder') || englishText(el.getAttribute('data-normal-placeholder')));
+        } else if (easyMode && el.hasAttribute('data-hira-placeholder')) {
           el.setAttribute('placeholder', el.getAttribute('data-hira-placeholder'));
         } else {
           el.setAttribute('placeholder', el.getAttribute('data-normal-placeholder'));
@@ -1011,15 +1184,16 @@
       });
 
       var toggleBtn = document.getElementById('reading-toggle');
+      var languageBtn = document.getElementById('language-toggle');
 
-      if (easyMode) {
-        toggleBtn.classList.add('active');
-      } else {
-        toggleBtn.classList.remove('active');
+      if (toggleBtn) {
+        toggleBtn.classList.toggle('active', easyMode && !englishMode);
       }
 
-      // easyModeが変わると検索対象テキスト(ひらがな込み)も変わるので、ここでまとめて再計算する。
-      // 以前はフィルター・検索のたびに毎回再計算していたため、データ件数が多いと重くなっていた。
+      if (languageBtn) {
+        languageBtn.classList.toggle('active', englishMode);
+      }
+
       allMarkers.forEach(function(item) {
         item.searchText = getSearchText(item.poi);
       });
@@ -1030,6 +1204,15 @@
         item.marker.setPopupContent(createPopupHtml(item.poi));
       });
 
+      if (currentLocationMarker) {
+        currentLocationMarker.setPopupContent(escapeHtml(easyText('現在地')));
+      }
+
+      if (selectedLocationMarker) {
+        selectedLocationMarker.setPopupContent(escapeHtml(easyText('選んだ場所')));
+      }
+
+      refreshMapPickButton();
       updateLegendContent(document.getElementById('legend-box'));
 
       if (lastTotalCount > 0) {
@@ -1298,7 +1481,23 @@
     });
 
     document.getElementById('reading-toggle').addEventListener('click', function() {
-      easyMode = !easyMode;
+      if (englishMode) {
+        englishMode = false;
+        easyMode = true;
+      } else {
+        easyMode = !easyMode;
+      }
+
+      updateEasyModeTexts();
+    });
+
+    document.getElementById('language-toggle').addEventListener('click', function() {
+      englishMode = !englishMode;
+
+      if (englishMode) {
+        easyMode = false;
+      }
+
       updateEasyModeTexts();
     });
 
@@ -1382,6 +1581,134 @@
       message.className = type;
     }
 
+    function setLatLngInputs(lat, lng) {
+      document.getElementById('lat').value = Number(lat).toFixed(6);
+      document.getElementById('lng').value = Number(lng).toFixed(6);
+    }
+
+    function createSimpleLocationIcon(color, size) {
+      return L.divIcon({
+        html:
+          '<div style="' +
+          'width:' + size + 'px;' +
+          'height:' + size + 'px;' +
+          'border-radius:50%;' +
+          'background:' + color + ';' +
+          'border:3px solid white;' +
+          'box-shadow:0 2px 6px rgba(0,0,0,0.35);' +
+          '"></div>',
+        className: '',
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size / 2]
+      });
+    }
+
+    function showCurrentLocationOnMap(lat, lng, accuracy) {
+      if (currentLocationMarker) {
+        map.removeLayer(currentLocationMarker);
+      }
+
+      if (currentLocationCircle) {
+        map.removeLayer(currentLocationCircle);
+      }
+
+      currentLocationMarker = L.marker([lat, lng], {
+        icon: createSimpleLocationIcon('#1a73e8', 20),
+        zIndexOffset: 1000
+      }).addTo(map);
+
+      currentLocationMarker.bindPopup(escapeHtml(easyText('現在地')));
+
+      if (accuracy && !isNaN(accuracy)) {
+        currentLocationCircle = L.circle([lat, lng], {
+          radius: accuracy,
+          color: '#1a73e8',
+          weight: 1,
+          fillColor: '#1a73e8',
+          fillOpacity: 0.12
+        }).addTo(map);
+      }
+    }
+
+    function setSelectedLocationOnMap(lat, lng, shouldZoom) {
+      setLatLngInputs(lat, lng);
+
+      if (selectedLocationMarker) {
+        selectedLocationMarker.setLatLng([lat, lng]);
+      } else {
+        selectedLocationMarker = L.marker([lat, lng], {
+          icon: createSimpleLocationIcon('#c5221f', 22),
+          draggable: true,
+          zIndexOffset: 900
+        }).addTo(map);
+
+        selectedLocationMarker.bindPopup(escapeHtml(easyText('選んだ場所')));
+
+        selectedLocationMarker.on('dragend', function() {
+          var latLng = selectedLocationMarker.getLatLng();
+          setLatLngInputs(latLng.lat, latLng.lng);
+          showMessage('地図上で場所を選びました', 'success');
+        });
+      }
+
+      if (shouldZoom) {
+        map.setView([lat, lng], Math.max(map.getZoom(), 16));
+      }
+
+      selectedLocationMarker.openPopup();
+    }
+
+    function clearSelectedLocationMarker() {
+      if (selectedLocationMarker) {
+        map.removeLayer(selectedLocationMarker);
+        selectedLocationMarker = null;
+      }
+    }
+
+    function refreshMapPickButton() {
+      var btn = document.getElementById('select-map-btn');
+
+      if (!btn) {
+        return;
+      }
+
+      btn.classList.toggle('active', isMapPickMode);
+      btn.textContent = isMapPickMode
+        ? easyText('地図選択中：地図をクリックしてください')
+        : (englishMode
+            ? (btn.getAttribute('data-en') || englishText(btn.getAttribute('data-normal')))
+            : (easyMode ? btn.getAttribute('data-hira') : btn.getAttribute('data-normal')));
+
+      map.getContainer().style.cursor = isMapPickMode ? 'crosshair' : '';
+    }
+
+    function setMapPickMode(nextState) {
+      isMapPickMode = nextState;
+      refreshMapPickButton();
+
+      if (isMapPickMode) {
+        showMessage('地図上で登録したい場所をクリックしてください', 'success');
+      }
+    }
+
+    document.getElementById('select-map-btn').addEventListener('click', function() {
+      setMapPickMode(!isMapPickMode);
+
+      if (!isMapPickMode) {
+        showMessage('地図選択を終了しました', 'success');
+      }
+    });
+
+    map.on('click', function(e) {
+      if (!isMapPickMode) {
+        return;
+      }
+
+      setSelectedLocationOnMap(e.latlng.lat, e.latlng.lng, false);
+      setMapPickMode(false);
+      showMessage('地図上で場所を選びました', 'success');
+    });
+
     document.getElementById('get-location-btn').addEventListener('click', function() {
       if (!navigator.geolocation) {
         showMessage('このブラウザでは現在地取得が使えません', 'error');
@@ -1394,13 +1721,13 @@
         function(position) {
           var lat = position.coords.latitude;
           var lng = position.coords.longitude;
+          var accuracy = position.coords.accuracy;
 
-          document.getElementById('lat').value = lat.toFixed(6);
-          document.getElementById('lng').value = lng.toFixed(6);
-
+          setLatLngInputs(lat, lng);
+          showCurrentLocationOnMap(lat, lng, accuracy);
           map.setView([lat, lng], 16);
 
-          showMessage('現在地を入力しました', 'success');
+          showMessage('現在地を表示しました。現在地を入力しました', 'success');
         },
         function(error) {
           var text = '現在地を取得できませんでした';
@@ -1417,6 +1744,13 @@
           maximumAge: 0
         }
       );
+    });
+
+    document.getElementById('danger-form').addEventListener('reset', function() {
+      setTimeout(function() {
+        clearSelectedLocationMarker();
+        setMapPickMode(false);
+      }, 0);
     });
 
     // --- GitHub Pages版：フォーム送信はGitHubへ直接保存しない ---
@@ -1506,6 +1840,8 @@
       addPoiToMap(savedData, true);
 
       document.getElementById('danger-form').reset();
+      clearSelectedLocationMarker();
+      setMapPickMode(false);
       updateEasyModeTexts();
       showMessage('登録しました。このブラウザには保存されました。公開データに反映するにはkikenmap.geojsonを更新してください', 'success');
     });
