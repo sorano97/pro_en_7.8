@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;800;900&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 
   <link
     rel="stylesheet"
@@ -401,6 +401,7 @@
       line-height: 1.4;
     }
 
+    /* --- Leaflet の見た目をデザインに合わせて上書き --- */
     .leaflet-popup-content-wrapper {
       border: 1.8px solid #161616;
       border-radius: 12px;
@@ -424,6 +425,7 @@
       filter: drop-shadow(0 2px 3px rgba(0,0,0,0.28));
     }
 
+    /* --- ローディング画面 --- */
     #loading-overlay {
       position: absolute;
       inset: 0;
@@ -598,13 +600,12 @@
         <h2 data-normal="危険な場所を登録する" data-hira="きけんな ばしょを とうろくする">危険な場所を登録する</h2>
         <p
           class="lead"
-          data-normal="危険だと感じた場所を入力すると、スプレッドシートに保存され、地図上にも表示されます"
+          data-normal="危険だと感じた場所を入力すると、このブラウザに保存され、地図上にも表示されます"
           data-hira="きけんだと おもった ばしょを 入れると、ちずに 表示されます"
         >
-          危険だと感じた場所を入力すると、スプレッドシートに保存され、地図上にも表示されます
+          危険だと感じた場所を入力すると、このブラウザに保存され、地図上にも表示されます
         </p>
 
-        <!-- フォームは見た目そのまま。送信ボタンを押してもサーバーには飛ばさない（地図は GeoJSON から読む） -->
         <form id="danger-form">
           <div class="form-group">
             <label for="placeName">
@@ -768,4 +769,903 @@
         <button class="filter-btn" data-type="不審者" data-normal="&#x26A0; 不審者" data-hira="&#x26A0; あやしい人">&#x26A0; 不審者</button>
         <button class="filter-btn" data-type="見通しが悪い" data-normal="&#x1F441; 見通し" data-hira="&#x1F441; 見えにくい">&#x1F441; 見通し</button>
         <button class="filter-btn" data-type="事故" data-normal="&#x1F525; 事故" data-hira="&#x1F525; じこ">&#x1F525; 事故</button>
-        
+        <button class="filter-btn" data-type="自然災害" data-normal="&#x1F333; 自然災害" data-hira="&#x1F333; さいがい">&#x1F333; 自然災害</button>
+        <button class="filter-btn" data-type="その他" data-normal="その他" data-hira="そのほか">その他</button>
+
+        <div id="search-area">
+          <input
+            type="search"
+            id="search-input"
+            placeholder="場所名・説明文・通報先などで検索"
+            data-normal-placeholder="場所名・説明文・通報先などで検索"
+            data-hira-placeholder="ばしょ・せつめい・れんらく先で さがす"
+            autocomplete="off"
+          >
+          <button type="button" id="clear-search-btn" data-normal="クリア" data-hira="けす">クリア</button>
+        </div>
+
+        <div id="count-display">表示中: - / 全 - 件</div>
+      </div>
+
+      <div id="map"></div>
+
+      <div id="loading-overlay">
+        <div class="loading-box">
+          <div class="loading-spinner"></div>
+          <p class="loading-title" data-normal="データを読み込んでいます" data-hira="データを よみこんでいます">データを読み込んでいます</p>
+          <div class="loading-bar-track">
+            <div class="loading-bar-fill" id="loading-bar-fill"></div>
+          </div>
+          <p class="loading-count" id="loading-count">0 / 0 件</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <script>
+    var map = L.map('map').setView([33.9675, 134.3507], 13);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      maxZoom: 19
+    }).addTo(map);
+
+    var colorMap = {
+      '交通量が多い': '#FF8800',
+      '暗い道': '#333333',
+      '不審者': '#FF2222',
+      '見通しが悪い': '#9900CC',
+      '事故': '#CC0000',
+      '自然災害': '#2E8B57',
+      'その他': '#888888'
+    };
+
+    var allMarkers = [];
+
+    // --- 変更点1：フィルターはボタン選択式(単一選択)ではなく、トグル選択式(複数選択)にする ---
+    // activeFilters が空のときは「すべて表示」。個別ボタンをクリックするとそのタイプだけを
+    // 集合に追加/削除でき、複数のタイプを同時にONにできる。「すべて」は集合をクリアするボタン。
+    var activeFilters = new Set();
+
+    var currentSearch = '';
+    var easyMode = false;
+    var lastLoadedCount = 0;
+    var lastTotalCount = 0;
+
+    var clusterGroup = L.markerClusterGroup({
+      showCoverageOnHover: false,
+      spiderfyOnMaxZoom: true,
+      disableClusteringAtZoom: 16,
+      maxClusterRadius: function(zoom) {
+        if (zoom <= 8) {
+          return 90;
+        }
+
+        if (zoom <= 11) {
+          return 70;
+        }
+
+        if (zoom <= 13) {
+          return 50;
+        }
+
+        return 35;
+      },
+      // --- 変更点3：クラスターの丸を「件数に応じて段々と」大きくする ---
+      // 標準の small/medium/large の3段階ではなく、件数の平方根に応じて
+      // 連続的にサイズが変わるようにする（件数が増えるほど少しずつ丸が大きくなる）。
+      iconCreateFunction: function(cluster) {
+        var count = cluster.getChildCount();
+        var size = Math.round(30 + Math.min(46, Math.sqrt(count) * 6));
+        var fontSize = size >= 54 ? 14 : 12;
+
+        return L.divIcon({
+          html:
+            '<div style="' +
+            'width:100%;height:100%;' +
+            'display:flex;align-items:center;justify-content:center;' +
+            'background:rgba(22,22,22,0.85);' +
+            'color:#fff;' +
+            'border:2.5px solid #fff;' +
+            'border-radius:50%;' +
+            'font-weight:800;' +
+            'font-size:' + fontSize + 'px;' +
+            '">' + count + '</div>',
+          className: 'custom-cluster-icon',
+          iconSize: L.point(size, size)
+        });
+      }
+    });
+
+    map.addLayer(clusterGroup);
+
+    function getColor(type) {
+      return colorMap[type] || '#888888';
+    }
+
+    function escapeHtml(text) {
+      if (text === null || text === undefined) {
+        return '';
+      }
+
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function normalizeText(text) {
+      if (text === null || text === undefined) {
+        return '';
+      }
+
+      return String(text)
+        .toLowerCase()
+        .replace(/\s+/g, '')
+        .trim();
+    }
+
+    function easyText(text) {
+      if (!easyMode) {
+        return text;
+      }
+
+      if (text === null || text === undefined) {
+        return '';
+      }
+
+      var result = String(text);
+
+      var dictionary = [
+        ['神山町', 'かみやまちょう'],
+        ['危険箇所', 'きけんなところ'],
+        ['危険な場所', 'きけんな ばしょ'],
+        ['危険の種類', 'きけんの しゅるい'],
+        ['危険度', 'きけんレベル'],
+        ['交通量が多い', 'くるまが おおい'],
+        ['暗い道', 'くらいみち'],
+        ['不審者', 'あやしい人'],
+        ['見通しが悪い', 'まわりが 見えにくい'],
+        ['自然災害', 'しぜんさいがい'],
+        ['事故', 'じこ'],
+        ['その他', 'そのほか'],
+        ['場所名', 'ばしょの なまえ'],
+        ['説明文', 'せつめい'],
+        ['報告日', 'とうろくした日'],
+        ['報告日時', 'とうろくした日'],
+        ['投稿者区分', 'とうろくした人'],
+        ['学生', 'がくせい'],
+        ['保護者', 'ほごしゃ'],
+        ['教員', '先生'],
+        ['地域住民', 'ちいきの人'],
+        ['近くの避難場所', '近くの にげる場所'],
+        ['避難場所', 'にげる場所'],
+        ['近くの交番・警察署', '近くの こうばん・けいさつ'],
+        ['交番', 'こうばん'],
+        ['警察署', 'けいさつしょ'],
+        ['相談・通報先', 'そうだん・れんらく先'],
+        ['通報先', 'れんらく先'],
+        ['確認状態', 'かくにんの じょうたい'],
+        ['対応状況', 'たいおうの じょうたい'],
+        ['登録しました', 'とうろくしました'],
+        ['地図に追加しました', 'ちずに ついかしました'],
+        ['登録しています', 'とうろくしています'],
+        ['現在地', 'いまいる ばしょ'],
+        ['取得', '入れる'],
+        ['入力', '入れる'],
+        ['必須', 'かならず'],
+        ['選択してください', 'えらんでください'],
+        ['低い', 'ひくい'],
+        ['高い', 'たかい'],
+        ['普通', 'ふつう'],
+        ['表示中', '表示している数'],
+        ['全', 'ぜんぶ'],
+        ['件', 'こ'],
+        ['緯度', 'いど'],
+        ['経度', 'けいど'],
+        ['街灯', 'あかり'],
+        ['夜', 'よる'],
+        ['周辺', 'まわり'],
+        ['駅', 'えき'],
+        ['公園', 'こうえん'],
+        ['交差点', 'こうさてん'],
+        ['横断', 'わたること'],
+        ['注意', 'ちゅうい'],
+        ['車', 'くるま'],
+        ['歩行者', '歩く人'],
+        ['自転車', 'じてんしゃ'],
+        ['大通り', '大きな道'],
+        ['人通り', '人どおり'],
+        ['学校', 'がっこう'],
+        ['データを読み込んでいます', 'データを よみこんでいます'],
+        ['読み込みに失敗しました', 'よみこみに しっぱいしました']
+      ];
+
+      dictionary.forEach(function(pair) {
+        result = result.split(pair[0]).join(pair[1]);
+      });
+
+      return result;
+    }
+
+    function updateEasyModeTexts() {
+      document.querySelectorAll('[data-normal][data-hira]').forEach(function(el) {
+        if (easyMode) {
+          el.textContent = el.getAttribute('data-hira');
+        } else {
+          el.textContent = el.getAttribute('data-normal');
+        }
+      });
+
+      document.querySelectorAll('[data-normal-placeholder][data-hira-placeholder]').forEach(function(el) {
+        if (easyMode) {
+          el.setAttribute('placeholder', el.getAttribute('data-hira-placeholder'));
+        } else {
+          el.setAttribute('placeholder', el.getAttribute('data-normal-placeholder'));
+        }
+      });
+
+      var toggleBtn = document.getElementById('reading-toggle');
+
+      if (easyMode) {
+        toggleBtn.classList.add('active');
+      } else {
+        toggleBtn.classList.remove('active');
+      }
+
+      // easyModeが変わると検索対象テキスト(ひらがな込み)も変わるので、ここでまとめて再計算する。
+      // 以前はフィルター・検索のたびに毎回再計算していたため、データ件数が多いと重くなっていた。
+      allMarkers.forEach(function(item) {
+        item.searchText = getSearchText(item.poi);
+      });
+
+      applyFilters();
+
+      allMarkers.forEach(function(item) {
+        item.marker.setPopupContent(createPopupHtml(item.poi));
+      });
+
+      updateLegendContent(document.getElementById('legend-box'));
+
+      if (lastTotalCount > 0) {
+        updateLoadingProgress(lastLoadedCount, lastTotalCount);
+      }
+    }
+
+    function getSearchText(poi) {
+      return normalizeText([
+        poi['場所名'],
+        poi['緯度'],
+        poi['経度'],
+        poi['危険の種類'],
+        poi['危険度'],
+        poi['危険度(1-5)'],
+        poi['説明文'],
+        poi['報告日時'],
+        poi['投稿者区分'],
+        poi['近くの避難場所'],
+        poi['近くの交番・警察署'],
+        poi['相談・通報先'],
+        poi['確認状態'],
+        poi['対応状況'],
+        easyText(poi['場所名']),
+        easyText(poi['危険の種類']),
+        easyText(poi['説明文'])
+      ].join(' '));
+    }
+
+    function getDangerLevel(poi) {
+      return parseInt(poi['危険度'] || poi['危険度(1-5)']) || 1;
+    }
+
+    function getDangerTypeLabel(type) {
+      return easyText(type || 'その他');
+    }
+
+    function createPopupHtml(poi) {
+      var dangerType = poi['危険の種類'] || 'その他';
+      var color = getColor(dangerType);
+      var level = getDangerLevel(poi);
+
+      if (level < 1) {
+        level = 1;
+      }
+
+      if (level > 5) {
+        level = 5;
+      }
+
+      var stars = '★'.repeat(level) + '☆'.repeat(5 - level);
+      var reportDate = '不明';
+
+      if (poi['報告日時']) {
+        var date = new Date(poi['報告日時']);
+
+        if (!isNaN(date.getTime())) {
+          reportDate = date.toLocaleDateString('ja-JP');
+        } else {
+          reportDate = poi['報告日時'];
+        }
+      }
+
+      var popup = '<div style="max-width:260px;font-size:13px;">';
+
+      popup += '<b style="font-size:15px;">' + escapeHtml(easyText(poi['場所名'] || '')) + '</b><br>';
+
+      popup +=
+        '<span style="' +
+        'display:inline-block;' +
+        'margin:4px 0;' +
+        'padding:2px 8px;' +
+        'background:' + color + ';' +
+        'color:white;' +
+        'border-radius:10px;' +
+        'font-size:11px;' +
+        '">' + escapeHtml(getDangerTypeLabel(dangerType)) + '</span><br>';
+
+      popup += escapeHtml(easyText('危険度')) + ': <b style="color:' + color + '">' + stars + '</b> (' + level + '/5)<br>';
+
+      if (poi['説明文']) {
+        popup += '<hr style="margin:4px 0;">';
+        popup += '<p>' + escapeHtml(easyText(poi['説明文'])) + '</p>';
+      }
+
+      popup += '<br><small>&#x1F4C5; ' + escapeHtml(easyText('報告日')) + ': ' + escapeHtml(easyText(reportDate)) + '</small>';
+
+      if (poi['投稿者区分']) {
+        popup += ' ／ ' + escapeHtml(easyText(poi['投稿者区分'])) + '<br>';
+      } else {
+        popup += '<br>';
+      }
+
+      if (poi['近くの避難場所']) {
+        popup += '<small>&#x1F3E5; ' + escapeHtml(easyText('避難場所')) + ': ' + escapeHtml(easyText(poi['近くの避難場所'])) + '</small><br>';
+      }
+
+      if (poi['近くの交番・警察署']) {
+        popup += '<small>&#x1F46E; ' + escapeHtml(easyText('交番')) + ': ' + escapeHtml(easyText(poi['近くの交番・警察署'])) + '</small><br>';
+      }
+
+      if (poi['相談・通報先']) {
+        popup += '<small>&#x1F4DE; ' + escapeHtml(easyText('通報先')) + ': ' + escapeHtml(easyText(poi['相談・通報先'])) + '</small>';
+      }
+
+      popup += '</div>';
+
+      return popup;
+    }
+
+    function createMarker(poi) {
+      var lat = parseFloat(poi['緯度']);
+      var lng = parseFloat(poi['経度']);
+
+      if (!lat || !lng || isNaN(lat) || isNaN(lng)) {
+        return null;
+      }
+
+      var dangerType = poi['危険の種類'] || 'その他';
+      var color = getColor(dangerType);
+      var level = getDangerLevel(poi);
+
+      if (level < 1) {
+        level = 1;
+      }
+
+      if (level > 5) {
+        level = 5;
+      }
+
+      var icon = L.divIcon({
+        html:
+          '<div style="' +
+          'background:' + color + ';' +
+          'color:white;' +
+          'border:2px solid white;' +
+          'border-radius:50%;' +
+          'width:28px;' +
+          'height:28px;' +
+          'display:flex;' +
+          'align-items:center;' +
+          'justify-content:center;' +
+          'font-weight:bold;' +
+          'font-size:13px;' +
+          'box-shadow:0 2px 4px rgba(0,0,0,0.4);' +
+          '">' + level + '</div>',
+        className: '',
+        iconSize: [28, 28],
+        iconAnchor: [14, 14]
+      });
+
+      var marker = L.marker([lat, lng], { icon: icon });
+
+      marker.bindPopup(createPopupHtml(poi));
+
+      return {
+        marker: marker,
+        type: dangerType,
+        poi: poi,
+        searchText: getSearchText(poi)
+      };
+    }
+
+    function matchesCurrentConditions(item) {
+      var matchesFilter = activeFilters.size === 0 || activeFilters.has(item.type);
+      var matchesSearch = currentSearch === '' || item.searchText.indexOf(currentSearch) !== -1;
+
+      return matchesFilter && matchesSearch;
+    }
+
+    function applyFilters() {
+      var visibleMarkers = [];
+
+      allMarkers.forEach(function(item) {
+        if (matchesCurrentConditions(item)) {
+          visibleMarkers.push(item.marker);
+        }
+      });
+
+      // addLayer()をループで呼ぶより、addLayers()で一括登録する方が
+      // クラスター構造の再計算が速く、件数が多いときの「重さ」が大きく改善する。
+      clusterGroup.clearLayers();
+      clusterGroup.addLayers(visibleMarkers);
+
+      var countText = '表示中: ' + visibleMarkers.length + ' / 全 ' + allMarkers.length + ' 件';
+
+      if (easyMode) {
+        countText = '表示している数: ' + visibleMarkers.length + ' / ぜんぶ ' + allMarkers.length + ' こ';
+      }
+
+      document.getElementById('count-display').textContent = countText;
+    }
+
+    function isFilterButtonActive(type) {
+      if (type === 'すべて') {
+        return activeFilters.size === 0;
+      }
+
+      return activeFilters.has(type);
+    }
+
+    function refreshFilterButtonsUI() {
+      document.querySelectorAll('.filter-btn').forEach(function(btn) {
+        var type = btn.getAttribute('data-type');
+        btn.classList.toggle('active', isFilterButtonActive(type));
+      });
+    }
+
+    function resetSearchAndFilter() {
+      activeFilters.clear();
+      currentSearch = '';
+      refreshFilterButtonsUI();
+
+      var searchInput = document.getElementById('search-input');
+      if (searchInput) {
+        searchInput.value = '';
+      }
+    }
+
+    function addPoiToMap(poi, openPopup) {
+      var result = createMarker(poi);
+
+      if (!result) {
+        return;
+      }
+
+      allMarkers.push(result);
+
+      if (openPopup) {
+        resetSearchAndFilter();
+      }
+
+      applyFilters();
+
+      if (openPopup) {
+        var lat = parseFloat(poi['緯度']);
+        var lng = parseFloat(poi['経度']);
+
+        map.setView([lat, lng], 16);
+
+        setTimeout(function() {
+          clusterGroup.zoomToShowLayer(result.marker, function() {
+            result.marker.openPopup();
+          });
+        }, 300);
+      }
+    }
+
+    // --- 変更点1：フィルターボタンをトグル式に ---
+    // 「すべて」はactiveFiltersをクリアするボタン、それ以外は個別にON/OFFを切り替えられる。
+    document.querySelectorAll('.filter-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var type = btn.getAttribute('data-type');
+
+        if (type === 'すべて') {
+          activeFilters.clear();
+        } else if (activeFilters.has(type)) {
+          activeFilters.delete(type);
+        } else {
+          activeFilters.add(type);
+        }
+
+        refreshFilterButtonsUI();
+        applyFilters();
+      });
+    });
+
+    document.getElementById('reading-toggle').addEventListener('click', function() {
+      easyMode = !easyMode;
+      updateEasyModeTexts();
+    });
+
+    document.getElementById('search-input').addEventListener('input', function() {
+      currentSearch = normalizeText(this.value);
+      applyFilters();
+    });
+
+    document.getElementById('search-input').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+
+        var firstVisible = allMarkers.find(function(item) {
+          return matchesCurrentConditions(item);
+        });
+
+        if (firstVisible) {
+          clusterGroup.zoomToShowLayer(firstVisible.marker, function() {
+            var latLng = firstVisible.marker.getLatLng();
+            map.setView(latLng, 16);
+            firstVisible.marker.openPopup();
+          });
+        }
+      }
+    });
+
+    document.getElementById('clear-search-btn').addEventListener('click', function() {
+      document.getElementById('search-input').value = '';
+      currentSearch = '';
+      applyFilters();
+    });
+
+    var legend = L.control({ position: 'bottomright' });
+
+    legend.onAdd = function() {
+      var div = L.DomUtil.create('div');
+      div.id = 'legend-box';
+
+      div.style.cssText =
+        'background:white;' +
+        'border:1.8px solid #161616;' +
+        'padding:10px 12px;' +
+        'border-radius:12px;' +
+        'font-size:12px;' +
+        'font-weight:600;' +
+        'color:#161616;' +
+        'line-height:1.8;';
+
+      updateLegendContent(div);
+
+      return div;
+    };
+
+    function updateLegendContent(div) {
+      if (!div) {
+        return;
+      }
+
+      div.innerHTML = '<b>&#x26A0; ' + escapeHtml(easyText('危険の種類')) + '</b><br>';
+
+      for (var type in colorMap) {
+        div.innerHTML +=
+          '<span style="' +
+          'display:inline-block;' +
+          'width:12px;' +
+          'height:12px;' +
+          'background:' + colorMap[type] + ';' +
+          'border-radius:50%;' +
+          'margin-right:5px;' +
+          'vertical-align:middle;' +
+          '"></span>' + escapeHtml(getDangerTypeLabel(type)) + '<br>';
+      }
+    }
+
+    legend.addTo(map);
+
+    function showMessage(text, type) {
+      var message = document.getElementById('message');
+
+      message.textContent = easyText(text);
+      message.className = type;
+    }
+
+    document.getElementById('get-location-btn').addEventListener('click', function() {
+      if (!navigator.geolocation) {
+        showMessage('このブラウザでは現在地取得が使えません', 'error');
+        return;
+      }
+
+      showMessage('現在地を取得しています', 'success');
+
+      navigator.geolocation.getCurrentPosition(
+        function(position) {
+          var lat = position.coords.latitude;
+          var lng = position.coords.longitude;
+
+          document.getElementById('lat').value = lat.toFixed(6);
+          document.getElementById('lng').value = lng.toFixed(6);
+
+          map.setView([lat, lng], 16);
+
+          showMessage('現在地を入力しました', 'success');
+        },
+        function(error) {
+          var text = '現在地を取得できませんでした';
+
+          if (error && error.message) {
+            text += '：' + error.message;
+          }
+
+          showMessage(text, 'error');
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        }
+      );
+    });
+
+    // --- GitHub Pages版：フォーム送信はGitHubへ直接保存しない ---
+    // GitHub Pagesは静的サイトなので、ブラウザから kikenmap.geojson を直接書き換えることはできない。
+    // ここでは入力内容を「このブラウザのlocalStorage」に保存し、地図に追加表示する。
+    // みんなに公開する正式データに反映したい場合は、kikenmap.geojsonを更新してGitHubにpushする。
+    var LOCAL_STORAGE_KEY = 'kikenmap_local_reports_v1';
+
+    function getLocalReports() {
+      try {
+        var raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : [];
+      } catch (error) {
+        console.error(error);
+        return [];
+      }
+    }
+
+    function saveLocalReport(poi) {
+      try {
+        var reports = getLocalReports();
+        reports.push(poi);
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(reports));
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    document.getElementById('danger-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+
+      var data = {
+        placeName: document.getElementById('placeName').value.trim(),
+        lat: document.getElementById('lat').value.trim(),
+        lng: document.getElementById('lng').value.trim(),
+        dangerType: document.getElementById('dangerType').value,
+        dangerLevel: document.getElementById('dangerLevel').value,
+        description: document.getElementById('description').value.trim(),
+        posterType: document.getElementById('posterType').value,
+        shelter: document.getElementById('shelter').value.trim(),
+        police: document.getElementById('police').value.trim(),
+        contact: document.getElementById('contact').value.trim()
+      };
+
+      if (
+        !data.placeName ||
+        !data.lat ||
+        !data.lng ||
+        !data.dangerType ||
+        !data.dangerLevel ||
+        !data.description
+      ) {
+        showMessage('必須項目を入力してください', 'error');
+        return;
+      }
+
+      var latNum = parseFloat(data.lat);
+      var lngNum = parseFloat(data.lng);
+
+      if (isNaN(latNum) || isNaN(lngNum)) {
+        showMessage('緯度と経度は数字で入力してください', 'error');
+        return;
+      }
+
+      var reportDate = new Date().toLocaleString('ja-JP');
+
+      var savedData = {
+        '場所名': data.placeName,
+        '緯度': latNum,
+        '経度': lngNum,
+        '危険の種類': data.dangerType,
+        '危険度': data.dangerLevel,
+        '危険度(1-5)': data.dangerLevel,
+        '説明文': data.description,
+        '写真URL': '',
+        '報告日時': reportDate,
+        '投稿者区分': data.posterType,
+        '近くの避難場所': data.shelter,
+        '近くの交番・警察署': data.police,
+        '相談・通報先': data.contact,
+        '確認状態': '未確認',
+        '対応状況': '対応前',
+        '削除フラグ': '表示'
+      };
+
+      saveLocalReport(savedData);
+      addPoiToMap(savedData, true);
+
+      document.getElementById('danger-form').reset();
+      updateEasyModeTexts();
+      showMessage('登録しました。このブラウザには保存されました。公開データに反映するにはkikenmap.geojsonを更新してください', 'success');
+    });
+
+    // --- GitHub Pages版：GeoJSONをfetchで読み込む ---
+    // index.html と同じ階層に kikenmap.geojson を置く。
+    // 例：/index.html と /kikenmap.geojson
+    var GEOJSON_URL = './kikenmap.geojson';
+    var CHUNK_SIZE = 300;
+
+    function poiFromGeoJsonFeature(feature) {
+      if (!feature || !feature.geometry || feature.geometry.type !== 'Point') {
+        return null;
+      }
+
+      var coords = feature.geometry.coordinates || [];
+      var lng = parseFloat(coords[0]);
+      var lat = parseFloat(coords[1]);
+
+      if (isNaN(lat) || isNaN(lng)) {
+        return null;
+      }
+
+      var props = feature.properties || {};
+      var poi = Object.assign({}, props);
+
+      poi['緯度'] = lat;
+      poi['経度'] = lng;
+
+      if (!poi['危険度'] && poi['危険度(1-5)']) {
+        poi['危険度'] = poi['危険度(1-5)'];
+      }
+
+      if (!poi['危険の種類']) {
+        poi['危険の種類'] = 'その他';
+      }
+
+      return poi;
+    }
+
+    function updateLoadingProgress(loaded, total) {
+      lastLoadedCount = loaded;
+      lastTotalCount = total;
+
+      var fill = document.getElementById('loading-bar-fill');
+      var countEl = document.getElementById('loading-count');
+      var percent = total > 0 ? Math.round((loaded / total) * 100) : 0;
+
+      if (fill) {
+        fill.style.width = percent + '%';
+      }
+
+      if (countEl) {
+        countEl.textContent = loaded + ' / ' + total + ' ' + easyText('件');
+      }
+    }
+
+    function finishLoading() {
+      var overlay = document.getElementById('loading-overlay');
+
+      if (!overlay) {
+        return;
+      }
+
+      overlay.classList.add('hidden');
+
+      setTimeout(function() {
+        overlay.style.display = 'none';
+      }, 400);
+    }
+
+    function showLoadingError(err) {
+      var overlay = document.getElementById('loading-overlay');
+
+      if (!overlay) {
+        return;
+      }
+
+      var box = overlay.querySelector('.loading-box');
+
+      if (box) {
+        box.innerHTML =
+          '<p class="loading-title" style="color:#c5221f;">' + escapeHtml(easyText('読み込みに失敗しました')) + '</p>' +
+          '<p class="loading-count">' + escapeHtml(err && err.message ? err.message : '') + '</p>';
+      }
+    }
+
+    function loadPoiObjectsInChunks(poiObjects) {
+      var total = poiObjects.length;
+      var index = 0;
+
+      updateLoadingProgress(0, total);
+
+      if (total === 0) {
+        applyFilters();
+        finishLoading();
+        return;
+      }
+
+      function step() {
+        var end = Math.min(index + CHUNK_SIZE, total);
+        var batch = [];
+
+        poiObjects.slice(index, end).forEach(function(poi) {
+          var result = createMarker(poi);
+
+          if (result) {
+            allMarkers.push(result);
+            batch.push(result.marker);
+          }
+        });
+
+        clusterGroup.addLayers(batch);
+
+        index = end;
+        updateLoadingProgress(index, total);
+
+        if (index < total) {
+          setTimeout(step, 0);
+        } else {
+          applyFilters();
+          finishLoading();
+        }
+      }
+
+      step();
+    }
+
+    function initialLoadPoiData() {
+      fetch(GEOJSON_URL, { cache: 'no-cache' })
+        .then(function(response) {
+          if (!response.ok) {
+            throw new Error('GeoJSONを読み込めませんでした：HTTP ' + response.status);
+          }
+
+          return response.json();
+        })
+        .then(function(geojson) {
+          var features = geojson && Array.isArray(geojson.features) ? geojson.features : [];
+
+          var poiObjects = features
+            .map(poiFromGeoJsonFeature)
+            .filter(function(poi) {
+              return poi && poi['削除フラグ'] !== '非表示';
+            });
+
+          var localReports = getLocalReports().filter(function(poi) {
+            return poi && poi['削除フラグ'] !== '非表示';
+          });
+
+          loadPoiObjectsInChunks(poiObjects.concat(localReports));
+        })
+        .catch(function(err) {
+          console.error(err);
+          showLoadingError(err);
+        });
+    }
+
+    applyFilters();
+    initialLoadPoiData();
+  </script>
+</body>
+</html>
