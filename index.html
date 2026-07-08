@@ -1,0 +1,111 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>危険マップ</title>
+
+  <!-- Leaflet の CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+
+  <style>
+    /* 画面いっぱいに地図を表示 */
+    html, body {
+      height: 100%;
+      margin: 0;
+    }
+    #map {
+      height: 100vh;
+      width: 100vw;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Leaflet の JS -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script>
+    // ① 地図を初期化
+    const map = L.map('map');
+
+    // ベースマップ（OSM）
+    const tileLayer = L.tileLayer(
+      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }
+    );
+    tileLayer.addTo(map);
+
+    // ② GeoJSON を fetch で読み込む
+    fetch('kikenmap.geojson')
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error('GeoJSON の取得に失敗しました');
+        }
+        return response.json();
+      })
+      .then((geojson) => {
+        // ③ GeoJSON を地図に追加（onEachFeature でピンをクリックしたときの処理を定義）
+        const geojsonLayer = L.geoJSON(geojson, {
+          onEachFeature: function (feature, layer) {
+            // feature.properties からポップアップの内容を作る
+            const props = feature.properties || {};
+
+            // プロパティ名が決まっていないときは、JSON そのまま表示しておく
+            // 必要に応じて「title」「description」などに書き換えてください
+            let content = '<h3>詳細</h3><pre style="white-space: pre-wrap;">'
+              + JSON.stringify(props, null, 2)
+              + '</pre>';
+
+            // もし name や description があるなら、見やすく整形
+            if (props.name || props.description) {
+              content = '';
+              if (props.name) {
+                content += '<strong>' + props.name + '</strong><br />';
+              }
+              if (props.description) {
+                content += props.description + '<br />';
+              }
+              // ほかの情報も見たい場合は追記
+              const extra = Object.assign({}, props);
+              delete extra.name;
+              delete extra.description;
+              if (Object.keys(extra).length > 0) {
+                content += '<hr /><pre style="white-space: pre-wrap;">'
+                  + JSON.stringify(extra, null, 2)
+                  + '</pre>';
+              }
+            }
+
+            layer.bindPopup(content);
+          }
+        }).addTo(map);
+
+        // ④ 全てのピンが入るように地図の表示範囲を調整
+        try {
+          map.fitBounds(geojsonLayer.getBounds());
+        } catch (e) {
+          // ポイントが 1つしかない等でエラーになる場合は、デフォルト位置をセット
+          map.setView([35.0, 135.0], 5);
+        }
+      })
+      .catch((error) => {
+        console.error(error);
+        alert('データの読み込みに失敗しました');
+      });
+  </script>
+</body>
+</html>
