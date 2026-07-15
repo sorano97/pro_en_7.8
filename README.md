@@ -107,7 +107,8 @@ GeoJSONファイルに保存された危険箇所データを読み込み、Leaf
 
 ### 3.1 GitHub Pagesで実行する場合
 
-このWebアプリはGitHub Pagesを使って公開できます
+このWebアプリはGitHub Pagesを使って公開しています
+URL: https://sorano97.github.io/pro_en_7.8/
 
 リポジトリ内に最低限、次のファイルを配置します
 
